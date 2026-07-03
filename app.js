@@ -1,32 +1,15 @@
-import { auth, db } from "./firebase-config.js";
-import {
-  createUserWithEmailAndPassword,
-  signInWithEmailAndPassword,
-  signOut,
-  onAuthStateChanged
-} from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
-import {
-  collection,
-  addDoc,
-  doc,
-  setDoc,
-  getDoc,
-  deleteDoc,
-  updateDoc,
-  onSnapshot,
-  arrayUnion,
-  arrayRemove,
-  serverTimestamp
-} from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
+import { WORKER_URL } from "./config.js";
 
 const DOWNVOTE_REVIEW_THRESHOLD = 10;
+const POLL_INTERVAL_MS = 15000;
+const TOKEN_KEY = "pib_token";
+const PROFILE_KEY = "pib_profile";
 
-let currentUser = null;   // firebase auth user
-let currentProfile = null; // { fullName, username }
+let currentToken = localStorage.getItem(TOKEN_KEY) || null;
+let currentProfile = JSON.parse(localStorage.getItem(PROFILE_KEY) || "null");
 let allIdeas = [];
-let activeFilter = "all";
 let savedIds = new Set();
-let unsubSaved = null;
+let activeFilter = "all";
 
 // ---------- DOM ----------
 const $ = (id) => document.getElementById(id);
@@ -44,10 +27,9 @@ const authForm = $("authForm");
 const registerFields = $("registerFields");
 const authSubmitBtn = $("authSubmitBtn");
 const authError = $("authError");
-let authMode = "login";
-
 const authSwitchText = $("authSwitchText");
 const authSwitchLink = $("authSwitchLink");
+let authMode = "login";
 
 const ideaModal = $("ideaModal");
 const ideaForm = $("ideaForm");
@@ -66,7 +48,24 @@ document.querySelectorAll("[data-close]").forEach((btn) => {
   m.addEventListener("click", (e) => { if (e.target === m) closeModal(m); });
 });
 
-// ---------- Auth ----------
+// ---------- API helper ----------
+async function api(path, { method = "GET", body, auth = false } = {}) {
+  const headers = { "Content-Type": "application/json" };
+  if (auth) {
+    if (!currentToken) throw new Error("נדרשת התחברות");
+    headers.Authorization = `Bearer ${currentToken}`;
+  }
+  const res = await fetch(`${WORKER_URL}${path}`, {
+    method,
+    headers,
+    body: body ? JSON.stringify(body) : undefined
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || "אירעה שגיאה, נסה שוב");
+  return data;
+}
+
+// ---------- Auth UI ----------
 function setAuthMode(mode) {
   authMode = mode;
   authForm.reset();
@@ -86,22 +85,19 @@ function setAuthMode(mode) {
   }
 }
 
-loginBtn.addEventListener("click", () => {
-  setAuthMode("login");
-  openModal(authModal);
-});
+loginBtn.addEventListener("click", () => { setAuthMode("login"); openModal(authModal); });
+registerBtn.addEventListener("click", () => { setAuthMode("register"); openModal(authModal); });
+authSwitchLink.addEventListener("click", (e) => { e.preventDefault(); setAuthMode(authMode === "login" ? "register" : "login"); });
 
-registerBtn.addEventListener("click", () => {
-  setAuthMode("register");
-  openModal(authModal);
+logoutBtn.addEventListener("click", () => {
+  currentToken = null;
+  currentProfile = null;
+  savedIds = new Set();
+  localStorage.removeItem(TOKEN_KEY);
+  localStorage.removeItem(PROFILE_KEY);
+  updateAuthUI();
+  renderIdeas();
 });
-
-authSwitchLink.addEventListener("click", (e) => {
-  e.preventDefault();
-  setAuthMode(authMode === "login" ? "register" : "login");
-});
-
-logoutBtn.addEventListener("click", () => signOut(auth));
 
 authForm.addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -110,73 +106,46 @@ authForm.addEventListener("submit", async (e) => {
   const password = $("authPassword").value;
 
   try {
+    let result;
     if (authMode === "register") {
       const fullName = $("fullName").value.trim();
       const username = $("forumUsername").value.trim();
-      if (!fullName || !username) {
-        throw new Error("נא למלא שם מלא ושם משתמש בפורום");
-      }
-      const cred = await createUserWithEmailAndPassword(auth, email, password);
-      await setDoc(doc(db, "users", cred.user.uid), {
-        fullName,
-        username,
-        email,
-        createdAt: serverTimestamp()
-      });
+      result = await api("/api/register", { method: "POST", body: { fullName, username, email, password } });
     } else {
-      await signInWithEmailAndPassword(auth, email, password);
+      result = await api("/api/login", { method: "POST", body: { email, password } });
     }
+    currentToken = result.token;
+    currentProfile = result.profile;
+    localStorage.setItem(TOKEN_KEY, currentToken);
+    localStorage.setItem(PROFILE_KEY, JSON.stringify(currentProfile));
     authForm.reset();
     closeModal(authModal);
+    updateAuthUI();
+    await loadSaved();
+    renderIdeas();
   } catch (err) {
-    authError.textContent = translateError(err);
+    authError.textContent = err.message;
     authError.classList.remove("hidden");
   }
 });
 
-function translateError(err) {
-  const code = err.code || "";
-  if (code.includes("email-already-in-use")) return "האימייל הזה כבר רשום במערכת";
-  if (code.includes("invalid-credential") || code.includes("wrong-password") || code.includes("user-not-found"))
-    return "אימייל או סיסמה שגויים";
-  if (code.includes("weak-password")) return "הסיסמה חלשה מדי (מינימום 6 תווים)";
-  return err.message || "אירעה שגיאה, נסה שוב";
-}
-
-onAuthStateChanged(auth, async (user) => {
-  currentUser = user;
-
-  if (unsubSaved) { unsubSaved(); unsubSaved = null; }
-  savedIds = new Set();
-
-  if (user) {
-    const snap = await getDoc(doc(db, "users", user.uid));
-    currentProfile = snap.exists() ? snap.data() : { fullName: user.email, username: "" };
+function updateAuthUI() {
+  if (currentProfile) {
     loginBtn.classList.add("hidden");
     registerBtn.classList.add("hidden");
     userBox.classList.remove("hidden");
     userName.textContent = `שלום, ${currentProfile.fullName || currentProfile.username}`;
-
-    unsubSaved = onSnapshot(collection(db, "users", user.uid, "saved"), (snapshot) => {
-      savedIds = new Set(snapshot.docs.map((d) => d.id));
-      renderIdeas();
-    });
   } else {
-    currentProfile = null;
     loginBtn.classList.remove("hidden");
     registerBtn.classList.remove("hidden");
     userBox.classList.add("hidden");
     userName.textContent = "";
   }
-  renderIdeas();
-});
+}
 
 // ---------- New idea ----------
 newIdeaBtn.addEventListener("click", () => {
-  if (!currentUser) {
-    openModal(authModal);
-    return;
-  }
+  if (!currentToken) { openModal(authModal); return; }
   openModal(ideaModal);
 });
 
@@ -187,22 +156,14 @@ ideaForm.addEventListener("submit", async (e) => {
   const tag = $("ideaTag").value.trim();
   if (!title || !desc) return;
 
-  await addDoc(collection(db, "ideas"), {
-    title,
-    desc,
-    tag: tag || "כללי",
-    authorUid: currentUser.uid,
-    authorName: currentProfile.fullName || currentProfile.username,
-    createdAt: serverTimestamp(),
-    upvotes: [],
-    downvotes: [],
-    status: "open",
-    takenByUid: null,
-    takenByName: null
-  });
-
-  ideaForm.reset();
-  closeModal(ideaModal);
+  try {
+    await api("/api/ideas", { method: "POST", auth: true, body: { title, desc, tag } });
+    ideaForm.reset();
+    closeModal(ideaModal);
+    await loadIdeas();
+  } catch (err) {
+    alert(err.message);
+  }
 });
 
 // ---------- Filters ----------
@@ -215,12 +176,28 @@ document.querySelectorAll(".filter-btn").forEach((btn) => {
   });
 });
 
-// ---------- Firestore live data ----------
-onSnapshot(collection(db, "ideas"), (snapshot) => {
-  allIdeas = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
-  renderIdeas();
-});
+// ---------- Data loading ----------
+async function loadIdeas() {
+  try {
+    const { ideas } = await api("/api/ideas");
+    allIdeas = ideas;
+    renderIdeas();
+  } catch (err) {
+    ideasGrid.innerHTML = `<div class="loading">שגיאה בטעינת רעיונות: ${escapeHtml(err.message)}</div>`;
+  }
+}
 
+async function loadSaved() {
+  if (!currentToken) { savedIds = new Set(); return; }
+  try {
+    const { savedIds: ids } = await api("/api/saved", { auth: true });
+    savedIds = new Set(ids);
+  } catch {
+    savedIds = new Set();
+  }
+}
+
+// ---------- Rendering ----------
 function scoreOf(idea) {
   return (idea.upvotes?.length || 0) - (idea.downvotes?.length || 0);
 }
@@ -244,7 +221,7 @@ function renderIdeas() {
 
   list.sort((a, b) => scoreOf(b) - scoreOf(a));
 
-  if (activeFilter === "saved" && !currentUser) {
+  if (activeFilter === "saved" && !currentToken) {
     ideasGrid.innerHTML = `<div class="loading">התחבר כדי לראות את הרעיונות השמורים שלך.</div>`;
     return;
   }
@@ -263,8 +240,9 @@ function buildCard(idea) {
   const card = document.createElement("div");
   card.className = "idea-card" + (st === "taken" ? " taken" : "") + (st === "done" ? " done" : "");
 
-  const myUpvoted = currentUser && idea.upvotes?.includes(currentUser.uid);
-  const myDownvoted = currentUser && idea.downvotes?.includes(currentUser.uid);
+  const myUid = currentProfile?.uid;
+  const myUpvoted = myUid && idea.upvotes?.includes(myUid);
+  const myDownvoted = myUid && idea.downvotes?.includes(myUid);
   const isSaved = savedIds.has(idea.id);
 
   card.innerHTML = `
@@ -304,7 +282,7 @@ function badgeOrClaimHtml(idea, st) {
     return `<span class="done-badge">בוצע &#9989; (ע"י ${escapeHtml(idea.takenByName || "מפתח")})</span>`;
   }
   if (st === "taken") {
-    if (currentUser && currentUser.uid === idea.takenByUid) {
+    if (currentProfile && currentProfile.uid === idea.takenByUid) {
       return `<button class="finish-btn">ביצעתי את הפרויקט &#9989;</button>`;
     }
     return `<span class="taken-badge">נלקח ע"י ${escapeHtml(idea.takenByName || "מפתח")}</span>`;
@@ -312,52 +290,52 @@ function badgeOrClaimHtml(idea, st) {
   return `<button class="claim-btn">יאללה עלי! &#128640;</button>`;
 }
 
-async function toggleSave(ideaId) {
-  if (!currentUser) { openModal(authModal); return; }
-  const ref = doc(db, "users", currentUser.uid, "saved", ideaId);
-  if (savedIds.has(ideaId)) {
-    await deleteDoc(ref);
-  } else {
-    await setDoc(ref, { savedAt: serverTimestamp() });
-  }
-}
-
+// ---------- Actions ----------
 async function vote(idea, direction) {
-  if (!currentUser) { openModal(authModal); return; }
-  const ref = doc(db, "ideas", idea.id);
-  const uid = currentUser.uid;
-  const upvoted = idea.upvotes?.includes(uid);
-  const downvoted = idea.downvotes?.includes(uid);
-
-  const updates = {};
-  if (direction === "up") {
-    updates.upvotes = upvoted ? arrayRemove(uid) : arrayUnion(uid);
-    if (downvoted) updates.downvotes = arrayRemove(uid);
-  } else {
-    updates.downvotes = downvoted ? arrayRemove(uid) : arrayUnion(uid);
-    if (upvoted) updates.upvotes = arrayRemove(uid);
+  if (!currentToken) { openModal(authModal); return; }
+  try {
+    const { idea: updated } = await api("/api/vote", { method: "POST", auth: true, body: { ideaId: idea.id, direction } });
+    applyIdeaUpdate(updated);
+  } catch (err) {
+    alert(err.message);
   }
-  await updateDoc(ref, updates);
 }
 
 async function claimIdea(idea) {
-  if (!currentUser) { openModal(authModal); return; }
-  if (idea.authorUid === currentUser.uid) {
-    alert("אתה לא יכול לאמץ את הרעיון של עצמך :)");
-    return;
+  if (!currentToken) { openModal(authModal); return; }
+  try {
+    const { idea: updated } = await api("/api/claim", { method: "POST", auth: true, body: { ideaId: idea.id } });
+    applyIdeaUpdate(updated);
+  } catch (err) {
+    alert(err.message);
   }
-  const ref = doc(db, "ideas", idea.id);
-  await updateDoc(ref, {
-    status: "taken",
-    takenByUid: currentUser.uid,
-    takenByName: currentProfile.fullName || currentProfile.username
-  });
 }
 
 async function finishIdea(idea) {
-  if (!currentUser || currentUser.uid !== idea.takenByUid) return;
-  const ref = doc(db, "ideas", idea.id);
-  await updateDoc(ref, { status: "done" });
+  if (!currentToken) return;
+  try {
+    const { idea: updated } = await api("/api/finish", { method: "POST", auth: true, body: { ideaId: idea.id } });
+    applyIdeaUpdate(updated);
+  } catch (err) {
+    alert(err.message);
+  }
+}
+
+async function toggleSave(ideaId) {
+  if (!currentToken) { openModal(authModal); return; }
+  try {
+    const { saved } = await api("/api/saved", { method: "POST", auth: true, body: { ideaId } });
+    if (saved) savedIds.add(ideaId); else savedIds.delete(ideaId);
+    renderIdeas();
+  } catch (err) {
+    alert(err.message);
+  }
+}
+
+function applyIdeaUpdate(updatedIdea) {
+  const idx = allIdeas.findIndex((i) => i.id === updatedIdea.id);
+  if (idx !== -1) allIdeas[idx] = updatedIdea;
+  renderIdeas();
 }
 
 function showDetail(idea) {
@@ -384,3 +362,9 @@ function escapeHtml(str) {
   div.textContent = str ?? "";
   return div.innerHTML;
 }
+
+// ---------- Init ----------
+updateAuthUI();
+loadSaved().then(renderIdeas);
+loadIdeas();
+setInterval(loadIdeas, POLL_INTERVAL_MS);
