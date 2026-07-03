@@ -1,20 +1,31 @@
-import { WORKER_URL } from "./config.js";
+import { auth, db } from "./firebase-config.js";
+import {
+  signInAnonymously,
+  onAuthStateChanged
+} from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
+import {
+  collection,
+  addDoc,
+  doc,
+  updateDoc,
+  onSnapshot,
+  arrayUnion,
+  arrayRemove,
+  serverTimestamp
+} from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
 
 const DOWNVOTE_REVIEW_THRESHOLD = 10;
-const POLL_INTERVAL_MS = 15000;
-const UID_KEY = "pib_uid";
 const NAME_KEY = "pib_name";
-const SAVED_KEY = "pib_saved"; // רשימת רעיונות שמורים - פרטית לגמרי, נשמרת רק בדפדפן
+const SAVED_KEY = "pib_saved"; // רעיונות שמורים - פרטיים לגמרי, נשמרים רק בדפדפן
 
-// זהות פשוטה: מזהה אקראי קבוע לדפדפן + שם תצוגה שנבחר. ללא סיסמה.
-let uid = localStorage.getItem(UID_KEY);
-if (!uid) { uid = crypto.randomUUID(); localStorage.setItem(UID_KEY, uid); }
+// זהות: uid אנונימי מ-Firebase (יציב לדפדפן) + שם תצוגה שנבחר. ללא סיסמה.
+let uid = null;
 let displayName = localStorage.getItem(NAME_KEY) || null;
 
 let allIdeas = [];
 let savedIds = new Set(JSON.parse(localStorage.getItem(SAVED_KEY) || "[]"));
 let activeFilter = "all";
-let pendingAction = null; // פעולה שתופעל אחרי שהמשתמש בוחר שם
+let pendingAction = null;
 
 // ---------- DOM ----------
 const $ = (id) => document.getElementById(id);
@@ -47,22 +58,23 @@ document.querySelectorAll("[data-close]").forEach((btn) => {
   m.addEventListener("click", (e) => { if (e.target === m) closeModal(m); });
 });
 
-// ---------- API helper ----------
-async function api(path, { method = "GET", body } = {}) {
-  const res = await fetch(`${WORKER_URL}${path}`, {
-    method,
-    headers: { "Content-Type": "application/json" },
-    body: body ? JSON.stringify(body) : undefined
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || "אירעה שגיאה, נסה שוב");
-  return data;
-}
+// ---------- Auth (anonymous) + live data ----------
+onAuthStateChanged(auth, (user) => {
+  if (user) {
+    uid = user.uid;
+    renderIdeas();
+  }
+});
+signInAnonymously(auth).catch((err) => {
+  ideasGrid.innerHTML = `<div class="loading">שגיאת התחברות ל-Firebase: ${escapeHtml(err.message)}</div>`;
+});
 
-// מוסיף את הזהות (uid + שם) לכל בקשת כתיבה
-function withIdentity(payload = {}) {
-  return { ...payload, uid, name: displayName };
-}
+onSnapshot(collection(db, "ideas"), (snapshot) => {
+  allIdeas = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
+  renderIdeas();
+}, (err) => {
+  ideasGrid.innerHTML = `<div class="loading">שגיאה בטעינת רעיונות: ${escapeHtml(err.message)}</div>`;
+});
 
 // ---------- Name / identity ----------
 function requireName(afterFn) {
@@ -108,13 +120,21 @@ ideaForm.addEventListener("submit", async (e) => {
   const title = $("ideaTitle").value.trim();
   const desc = $("ideaDesc").value.trim();
   const tag = $("ideaTag").value.trim();
-  if (!title || !desc) return;
+  if (!title || !desc || !uid) return;
 
   try {
-    await api("/api/ideas", { method: "POST", body: withIdentity({ title, desc, tag }) });
+    await addDoc(collection(db, "ideas"), {
+      title, desc,
+      tag: tag || "כללי",
+      authorUid: uid,
+      authorName: displayName,
+      createdAt: serverTimestamp(),
+      upvotes: [], downvotes: [],
+      status: "open",
+      takenByUid: null, takenByName: null
+    });
     ideaForm.reset();
     closeModal(ideaModal);
-    await loadIdeas();
   } catch (err) {
     alert(err.message);
   }
@@ -129,17 +149,6 @@ document.querySelectorAll(".filter-btn").forEach((btn) => {
     renderIdeas();
   });
 });
-
-// ---------- Data loading ----------
-async function loadIdeas() {
-  try {
-    const { ideas } = await api("/api/ideas");
-    allIdeas = ideas;
-    renderIdeas();
-  } catch (err) {
-    ideasGrid.innerHTML = `<div class="loading">שגיאה בטעינת רעיונות: ${escapeHtml(err.message)}</div>`;
-  }
-}
 
 // ---------- Rendering ----------
 function scoreOf(idea) {
@@ -179,8 +188,8 @@ function buildCard(idea) {
   const card = document.createElement("div");
   card.className = "idea-card" + (st === "taken" ? " taken" : "") + (st === "done" ? " done" : "");
 
-  const myUpvoted = idea.upvotes?.includes(uid);
-  const myDownvoted = idea.downvotes?.includes(uid);
+  const myUpvoted = uid && idea.upvotes?.includes(uid);
+  const myDownvoted = uid && idea.downvotes?.includes(uid);
   const isSaved = savedIds.has(idea.id);
 
   card.innerHTML = `
@@ -220,7 +229,7 @@ function badgeOrClaimHtml(idea, st) {
     return `<span class="done-badge">בוצע &#9989; (ע"י ${escapeHtml(idea.takenByName || "מפתח")})</span>`;
   }
   if (st === "taken") {
-    if (uid === idea.takenByUid) {
+    if (uid && uid === idea.takenByUid) {
       return `<button class="finish-btn">ביצעתי את הפרויקט &#9989;</button>`;
     }
     return `<span class="taken-badge">נלקח ע"י ${escapeHtml(idea.takenByName || "מפתח")}</span>`;
@@ -231,42 +240,50 @@ function badgeOrClaimHtml(idea, st) {
 // ---------- Actions ----------
 function vote(idea, direction) {
   requireName(async () => {
-    try {
-      const { idea: updated } = await api("/api/vote", { method: "POST", body: withIdentity({ ideaId: idea.id, direction }) });
-      applyIdeaUpdate(updated);
-    } catch (err) { alert(err.message); }
+    if (!uid) return;
+    const ref = doc(db, "ideas", idea.id);
+    const upvoted = idea.upvotes?.includes(uid);
+    const downvoted = idea.downvotes?.includes(uid);
+    const updates = {};
+    if (direction === "up") {
+      updates.upvotes = upvoted ? arrayRemove(uid) : arrayUnion(uid);
+      if (downvoted) updates.downvotes = arrayRemove(uid);
+    } else {
+      updates.downvotes = downvoted ? arrayRemove(uid) : arrayUnion(uid);
+      if (upvoted) updates.upvotes = arrayRemove(uid);
+    }
+    try { await updateDoc(ref, updates); } catch (err) { alert(err.message); }
   });
 }
 
 function claimIdea(idea) {
   requireName(async () => {
+    if (!uid) return;
+    if (idea.authorUid === uid) { alert("אתה לא יכול לאמץ את הרעיון של עצמך :)"); return; }
     try {
-      const { idea: updated } = await api("/api/claim", { method: "POST", body: withIdentity({ ideaId: idea.id }) });
-      applyIdeaUpdate(updated);
+      await updateDoc(doc(db, "ideas", idea.id), {
+        status: "taken",
+        takenByUid: uid,
+        takenByName: displayName
+      });
     } catch (err) { alert(err.message); }
   });
 }
 
 function finishIdea(idea) {
   requireName(async () => {
+    if (!uid || uid !== idea.takenByUid) return;
     try {
-      const { idea: updated } = await api("/api/finish", { method: "POST", body: withIdentity({ ideaId: idea.id }) });
-      applyIdeaUpdate(updated);
+      await updateDoc(doc(db, "ideas", idea.id), { status: "done" });
     } catch (err) { alert(err.message); }
   });
 }
 
-// שמירה "לעצמי" - פרטית לגמרי, נשמרת רק בדפדפן הזה (localStorage)
+// שמירה "לעצמי" - פרטית לגמרי, נשמרת רק בדפדפן הזה
 function toggleSave(ideaId) {
   if (savedIds.has(ideaId)) savedIds.delete(ideaId);
   else savedIds.add(ideaId);
   localStorage.setItem(SAVED_KEY, JSON.stringify([...savedIds]));
-  renderIdeas();
-}
-
-function applyIdeaUpdate(updatedIdea) {
-  const idx = allIdeas.findIndex((i) => i.id === updatedIdea.id);
-  if (idx !== -1) allIdeas[idx] = updatedIdea;
   renderIdeas();
 }
 
@@ -297,5 +314,3 @@ function escapeHtml(str) {
 
 // ---------- Init ----------
 updateNameUI();
-loadIdeas();
-setInterval(loadIdeas, POLL_INTERVAL_MS);

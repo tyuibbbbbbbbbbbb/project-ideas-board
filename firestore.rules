@@ -1,0 +1,25 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // רעיונות - קריאה פתוחה לכולם. כתיבה מותרת לכל משתמש מזוהה (כולל אנונימי).
+    // אין סיסמאות: כל אחד יכול לפרסם/להצביע/לאמץ. אימות אנונימי נותן uid יציב
+    // כדי למנוע הצבעה כפולה ולזהות מי אימץ פרויקט.
+    match /ideas/{ideaId} {
+      allow read: if true;
+
+      allow create: if request.auth != null
+        && request.resource.data.title is string
+        && request.resource.data.title.size() > 0
+        && request.resource.data.title.size() <= 120
+        && request.resource.data.desc is string
+        && request.resource.data.desc.size() <= 4000
+        && request.resource.data.authorUid == request.auth.uid;
+
+      // עדכון (הצבעה/אימוץ/סימון בוצע) - מותר לכל משתמש מזוהה
+      allow update: if request.auth != null;
+
+      allow delete: if false;
+    }
+  }
+}
