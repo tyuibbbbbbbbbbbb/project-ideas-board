@@ -2,34 +2,33 @@ import { WORKER_URL } from "./config.js";
 
 const DOWNVOTE_REVIEW_THRESHOLD = 10;
 const POLL_INTERVAL_MS = 15000;
-const TOKEN_KEY = "pib_token";
-const PROFILE_KEY = "pib_profile";
+const UID_KEY = "pib_uid";
+const NAME_KEY = "pib_name";
+const SAVED_KEY = "pib_saved"; // רשימת רעיונות שמורים - פרטית לגמרי, נשמרת רק בדפדפן
 
-let currentToken = localStorage.getItem(TOKEN_KEY) || null;
-let currentProfile = JSON.parse(localStorage.getItem(PROFILE_KEY) || "null");
+// זהות פשוטה: מזהה אקראי קבוע לדפדפן + שם תצוגה שנבחר. ללא סיסמה.
+let uid = localStorage.getItem(UID_KEY);
+if (!uid) { uid = crypto.randomUUID(); localStorage.setItem(UID_KEY, uid); }
+let displayName = localStorage.getItem(NAME_KEY) || null;
+
 let allIdeas = [];
-let savedIds = new Set();
+let savedIds = new Set(JSON.parse(localStorage.getItem(SAVED_KEY) || "[]"));
 let activeFilter = "all";
+let pendingAction = null; // פעולה שתופעל אחרי שהמשתמש בוחר שם
 
 // ---------- DOM ----------
 const $ = (id) => document.getElementById(id);
-const loginBtn = $("loginBtn");
-const registerBtn = $("registerBtn");
+const setNameBtn = $("setNameBtn");
+const changeNameBtn = $("changeNameBtn");
 const userBox = $("userBox");
 const userName = $("userName");
-const logoutBtn = $("logoutBtn");
 const newIdeaBtn = $("newIdeaBtn");
 const ideasGrid = $("ideasGrid");
 
-const authModal = $("authModal");
-const authModalTitle = $("authModalTitle");
-const authForm = $("authForm");
-const registerFields = $("registerFields");
-const authSubmitBtn = $("authSubmitBtn");
-const authError = $("authError");
-const authSwitchText = $("authSwitchText");
-const authSwitchLink = $("authSwitchLink");
-let authMode = "login";
+const nameModal = $("nameModal");
+const nameForm = $("nameForm");
+const displayNameInput = $("displayNameInput");
+const nameError = $("nameError");
 
 const ideaModal = $("ideaModal");
 const ideaForm = $("ideaForm");
@@ -44,20 +43,15 @@ function closeModal(el) { el.classList.add("hidden"); }
 document.querySelectorAll("[data-close]").forEach((btn) => {
   btn.addEventListener("click", () => closeModal($(btn.dataset.close)));
 });
-[authModal, ideaModal, detailModal].forEach((m) => {
+[nameModal, ideaModal, detailModal].forEach((m) => {
   m.addEventListener("click", (e) => { if (e.target === m) closeModal(m); });
 });
 
 // ---------- API helper ----------
-async function api(path, { method = "GET", body, auth = false } = {}) {
-  const headers = { "Content-Type": "application/json" };
-  if (auth) {
-    if (!currentToken) throw new Error("נדרשת התחברות");
-    headers.Authorization = `Bearer ${currentToken}`;
-  }
+async function api(path, { method = "GET", body } = {}) {
   const res = await fetch(`${WORKER_URL}${path}`, {
     method,
-    headers,
+    headers: { "Content-Type": "application/json" },
     body: body ? JSON.stringify(body) : undefined
   });
   const data = await res.json().catch(() => ({}));
@@ -65,89 +59,49 @@ async function api(path, { method = "GET", body, auth = false } = {}) {
   return data;
 }
 
-// ---------- Auth UI ----------
-function setAuthMode(mode) {
-  authMode = mode;
-  authForm.reset();
-  authError.classList.add("hidden");
-  if (mode === "register") {
-    authModalTitle.textContent = "הרשמה";
-    authSubmitBtn.textContent = "הרשם";
-    registerFields.classList.remove("hidden");
-    authSwitchText.textContent = "יש לך כבר חשבון?";
-    authSwitchLink.textContent = "התחבר עכשיו";
-  } else {
-    authModalTitle.textContent = "התחברות";
-    authSubmitBtn.textContent = "התחבר";
-    registerFields.classList.add("hidden");
-    authSwitchText.textContent = "אין לך חשבון?";
-    authSwitchLink.textContent = "הרשם עכשיו";
-  }
+// מוסיף את הזהות (uid + שם) לכל בקשת כתיבה
+function withIdentity(payload = {}) {
+  return { ...payload, uid, name: displayName };
 }
 
-loginBtn.addEventListener("click", () => { setAuthMode("login"); openModal(authModal); });
-registerBtn.addEventListener("click", () => { setAuthMode("register"); openModal(authModal); });
-authSwitchLink.addEventListener("click", (e) => { e.preventDefault(); setAuthMode(authMode === "login" ? "register" : "login"); });
+// ---------- Name / identity ----------
+function requireName(afterFn) {
+  if (displayName) { afterFn(); return; }
+  pendingAction = afterFn;
+  displayNameInput.value = "";
+  nameError.classList.add("hidden");
+  openModal(nameModal);
+}
 
-logoutBtn.addEventListener("click", () => {
-  currentToken = null;
-  currentProfile = null;
-  savedIds = new Set();
-  localStorage.removeItem(TOKEN_KEY);
-  localStorage.removeItem(PROFILE_KEY);
-  updateAuthUI();
-  renderIdeas();
-});
+setNameBtn.addEventListener("click", () => { pendingAction = null; displayNameInput.value = ""; openModal(nameModal); });
+changeNameBtn.addEventListener("click", () => { pendingAction = null; displayNameInput.value = displayName || ""; openModal(nameModal); });
 
-authForm.addEventListener("submit", async (e) => {
+nameForm.addEventListener("submit", (e) => {
   e.preventDefault();
-  authError.classList.add("hidden");
-  const email = $("authEmail").value.trim();
-  const password = $("authPassword").value;
-
-  try {
-    let result;
-    if (authMode === "register") {
-      const fullName = $("fullName").value.trim();
-      const username = $("forumUsername").value.trim();
-      result = await api("/api/register", { method: "POST", body: { fullName, username, email, password } });
-    } else {
-      result = await api("/api/login", { method: "POST", body: { email, password } });
-    }
-    currentToken = result.token;
-    currentProfile = result.profile;
-    localStorage.setItem(TOKEN_KEY, currentToken);
-    localStorage.setItem(PROFILE_KEY, JSON.stringify(currentProfile));
-    authForm.reset();
-    closeModal(authModal);
-    updateAuthUI();
-    await loadSaved();
-    renderIdeas();
-  } catch (err) {
-    authError.textContent = err.message;
-    authError.classList.remove("hidden");
-  }
+  const name = displayNameInput.value.trim();
+  if (!name) { nameError.textContent = "נא להזין שם"; nameError.classList.remove("hidden"); return; }
+  displayName = name;
+  localStorage.setItem(NAME_KEY, name);
+  closeModal(nameModal);
+  updateNameUI();
+  renderIdeas();
+  if (pendingAction) { const fn = pendingAction; pendingAction = null; fn(); }
 });
 
-function updateAuthUI() {
-  if (currentProfile) {
-    loginBtn.classList.add("hidden");
-    registerBtn.classList.add("hidden");
+function updateNameUI() {
+  if (displayName) {
+    setNameBtn.classList.add("hidden");
     userBox.classList.remove("hidden");
-    userName.textContent = `שלום, ${currentProfile.fullName || currentProfile.username}`;
+    userName.textContent = `שלום, ${displayName}`;
   } else {
-    loginBtn.classList.remove("hidden");
-    registerBtn.classList.remove("hidden");
+    setNameBtn.classList.remove("hidden");
     userBox.classList.add("hidden");
     userName.textContent = "";
   }
 }
 
 // ---------- New idea ----------
-newIdeaBtn.addEventListener("click", () => {
-  if (!currentToken) { openModal(authModal); return; }
-  openModal(ideaModal);
-});
+newIdeaBtn.addEventListener("click", () => requireName(() => openModal(ideaModal)));
 
 ideaForm.addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -157,7 +111,7 @@ ideaForm.addEventListener("submit", async (e) => {
   if (!title || !desc) return;
 
   try {
-    await api("/api/ideas", { method: "POST", auth: true, body: { title, desc, tag } });
+    await api("/api/ideas", { method: "POST", body: withIdentity({ title, desc, tag }) });
     ideaForm.reset();
     closeModal(ideaModal);
     await loadIdeas();
@@ -187,16 +141,6 @@ async function loadIdeas() {
   }
 }
 
-async function loadSaved() {
-  if (!currentToken) { savedIds = new Set(); return; }
-  try {
-    const { savedIds: ids } = await api("/api/saved", { auth: true });
-    savedIds = new Set(ids);
-  } catch {
-    savedIds = new Set();
-  }
-}
-
 // ---------- Rendering ----------
 function scoreOf(idea) {
   return (idea.upvotes?.length || 0) - (idea.downvotes?.length || 0);
@@ -221,11 +165,6 @@ function renderIdeas() {
 
   list.sort((a, b) => scoreOf(b) - scoreOf(a));
 
-  if (activeFilter === "saved" && !currentToken) {
-    ideasGrid.innerHTML = `<div class="loading">התחבר כדי לראות את הרעיונות השמורים שלך.</div>`;
-    return;
-  }
-
   if (list.length === 0) {
     ideasGrid.innerHTML = `<div class="loading">אין רעיונות להצגה כרגע. תהיה הראשון לפרסם!</div>`;
     return;
@@ -240,9 +179,8 @@ function buildCard(idea) {
   const card = document.createElement("div");
   card.className = "idea-card" + (st === "taken" ? " taken" : "") + (st === "done" ? " done" : "");
 
-  const myUid = currentProfile?.uid;
-  const myUpvoted = myUid && idea.upvotes?.includes(myUid);
-  const myDownvoted = myUid && idea.downvotes?.includes(myUid);
+  const myUpvoted = idea.upvotes?.includes(uid);
+  const myDownvoted = idea.downvotes?.includes(uid);
   const isSaved = savedIds.has(idea.id);
 
   card.innerHTML = `
@@ -282,7 +220,7 @@ function badgeOrClaimHtml(idea, st) {
     return `<span class="done-badge">בוצע &#9989; (ע"י ${escapeHtml(idea.takenByName || "מפתח")})</span>`;
   }
   if (st === "taken") {
-    if (currentProfile && currentProfile.uid === idea.takenByUid) {
+    if (uid === idea.takenByUid) {
       return `<button class="finish-btn">ביצעתי את הפרויקט &#9989;</button>`;
     }
     return `<span class="taken-badge">נלקח ע"י ${escapeHtml(idea.takenByName || "מפתח")}</span>`;
@@ -291,45 +229,39 @@ function badgeOrClaimHtml(idea, st) {
 }
 
 // ---------- Actions ----------
-async function vote(idea, direction) {
-  if (!currentToken) { openModal(authModal); return; }
-  try {
-    const { idea: updated } = await api("/api/vote", { method: "POST", auth: true, body: { ideaId: idea.id, direction } });
-    applyIdeaUpdate(updated);
-  } catch (err) {
-    alert(err.message);
-  }
+function vote(idea, direction) {
+  requireName(async () => {
+    try {
+      const { idea: updated } = await api("/api/vote", { method: "POST", body: withIdentity({ ideaId: idea.id, direction }) });
+      applyIdeaUpdate(updated);
+    } catch (err) { alert(err.message); }
+  });
 }
 
-async function claimIdea(idea) {
-  if (!currentToken) { openModal(authModal); return; }
-  try {
-    const { idea: updated } = await api("/api/claim", { method: "POST", auth: true, body: { ideaId: idea.id } });
-    applyIdeaUpdate(updated);
-  } catch (err) {
-    alert(err.message);
-  }
+function claimIdea(idea) {
+  requireName(async () => {
+    try {
+      const { idea: updated } = await api("/api/claim", { method: "POST", body: withIdentity({ ideaId: idea.id }) });
+      applyIdeaUpdate(updated);
+    } catch (err) { alert(err.message); }
+  });
 }
 
-async function finishIdea(idea) {
-  if (!currentToken) return;
-  try {
-    const { idea: updated } = await api("/api/finish", { method: "POST", auth: true, body: { ideaId: idea.id } });
-    applyIdeaUpdate(updated);
-  } catch (err) {
-    alert(err.message);
-  }
+function finishIdea(idea) {
+  requireName(async () => {
+    try {
+      const { idea: updated } = await api("/api/finish", { method: "POST", body: withIdentity({ ideaId: idea.id }) });
+      applyIdeaUpdate(updated);
+    } catch (err) { alert(err.message); }
+  });
 }
 
-async function toggleSave(ideaId) {
-  if (!currentToken) { openModal(authModal); return; }
-  try {
-    const { saved } = await api("/api/saved", { method: "POST", auth: true, body: { ideaId } });
-    if (saved) savedIds.add(ideaId); else savedIds.delete(ideaId);
-    renderIdeas();
-  } catch (err) {
-    alert(err.message);
-  }
+// שמירה "לעצמי" - פרטית לגמרי, נשמרת רק בדפדפן הזה (localStorage)
+function toggleSave(ideaId) {
+  if (savedIds.has(ideaId)) savedIds.delete(ideaId);
+  else savedIds.add(ideaId);
+  localStorage.setItem(SAVED_KEY, JSON.stringify([...savedIds]));
+  renderIdeas();
 }
 
 function applyIdeaUpdate(updatedIdea) {
@@ -364,7 +296,6 @@ function escapeHtml(str) {
 }
 
 // ---------- Init ----------
-updateAuthUI();
-loadSaved().then(renderIdeas);
+updateNameUI();
 loadIdeas();
 setInterval(loadIdeas, POLL_INTERVAL_MS);

@@ -10,6 +10,5 @@ DATA_BRANCH = "master"
 # רשימת כתובות מותרות לגשת ל-API (האתר שלך ב-GitHub Pages)
 ALLOWED_ORIGIN = "https://tyuibbbbbbbbbbbb.github.io"
 
-# סודות (מוגדרים בנפרד באמצעות `wrangler secret put`, לא נשמרים כאן):
-#   GITHUB_TOKEN  - Personal Access Token עם הרשאת כתיבה לריפו project-ideas-data בלבד
-#   JWT_SECRET    - מחרוזת אקראית ארוכה לחתימת טוקני התחברות
+# סוד (מוגדר בנפרד באמצעות `wrangler secret put`, לא נשמר כאן):
+#   GITHUB_TOKEN - Fine-grained token עם הרשאת Contents: Read and write לריפו project-ideas-data בלבד

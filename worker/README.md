@@ -30,15 +30,13 @@ npx wrangler login
 
 ייפתח דפדפן לאישור החיבור לחשבון ה-Cloudflare שלכם.
 
-לאחר מכן הגדירו את הסודות (יתבקש להזין ערך אחרי כל פקודה):
+לאחר מכן הגדירו את הסוד (יתבקש להזין ערך):
 
 ```
 npx wrangler secret put GITHUB_TOKEN
-npx wrangler secret put JWT_SECRET
 ```
 
-- ל-`GITHUB_TOKEN` הדביקו את הטוקן משלב 2.
-- ל-`JWT_SECRET` הדביקו מחרוזת אקראית ארוכה כלשהי (אפשר לייצר עם `openssl rand -hex 32` או כל מחולל סיסמאות).
+הדביקו את הטוקן משלב 2 (חייב להיות עם הרשאת **Contents: Read and write** על הריפו `project-ideas-data`).
 
 לבסוף פרסו:
 

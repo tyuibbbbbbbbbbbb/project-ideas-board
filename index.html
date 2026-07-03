@@ -15,11 +15,10 @@
     <span class="brand-gold">לוח</span> הרעיונות
   </div>
   <div id="authArea" class="auth-area">
-    <button id="loginBtn" class="btn btn-ghost">התחברות</button>
-    <button id="registerBtn" class="btn btn-gold">הרשמה</button>
+    <button id="setNameBtn" class="btn btn-gold">כניסה בשם</button>
     <div id="userBox" class="user-box hidden">
       <span id="userName"></span>
-      <button id="logoutBtn" class="btn btn-ghost small">התנתקות</button>
+      <button id="changeNameBtn" class="btn btn-ghost small">שנה שם</button>
     </div>
   </div>
 </header>
@@ -62,28 +61,17 @@
   </div>
 </div>
 
-<!-- Modal: Auth -->
-<div id="authModal" class="modal hidden">
+<!-- Modal: Set display name -->
+<div id="nameModal" class="modal hidden">
   <div class="modal-card">
-    <button class="modal-close" data-close="authModal">&times;</button>
-    <h2 id="authModalTitle">התחברות</h2>
-    <form id="authForm">
-      <div id="registerFields" class="hidden">
-        <label>שם מלא</label>
-        <input type="text" id="fullName" maxlength="60" placeholder="שם מלא" />
-        <label>שם משתמש בפורום</label>
-        <input type="text" id="forumUsername" maxlength="40" placeholder="שם משתמש בפורום" />
-      </div>
-      <label>אימייל</label>
-      <input type="email" id="authEmail" required placeholder="you@example.com" />
-      <label>סיסמה</label>
-      <input type="password" id="authPassword" required minlength="6" placeholder="לפחות 6 תווים" />
-      <button type="submit" id="authSubmitBtn" class="btn btn-gold full">התחבר</button>
-      <p id="authError" class="error-text hidden"></p>
-      <p class="auth-switch">
-        <span id="authSwitchText">אין לך חשבון?</span>
-        <a href="#" id="authSwitchLink">הרשם עכשיו</a>
-      </p>
+    <button class="modal-close" data-close="nameModal">&times;</button>
+    <h2>באיזה שם להציג אותך?</h2>
+    <p class="modal-sub">אין צורך בסיסמה או הרשמה - פשוט בחר שם תצוגה שיופיע ליד הרעיונות וההצבעות שלך.</p>
+    <form id="nameForm">
+      <label>שם תצוגה</label>
+      <input type="text" id="displayNameInput" required maxlength="40" placeholder="לדוגמה: יוסי מהפורום" />
+      <button type="submit" class="btn btn-gold full">שמור והמשך</button>
+      <p id="nameError" class="error-text hidden"></p>
     </form>
   </div>
 </div>

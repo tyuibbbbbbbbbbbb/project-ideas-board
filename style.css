@@ -295,6 +295,7 @@ body {
 .modal-close:hover { color: var(--gold); }
 
 .modal-card h2 { margin-top: 0; color: var(--gold-soft); }
+.modal-sub { color: var(--text-dim); font-size: 14px; line-height: 1.6; margin-top: 0; }
 
 form label {
   display: block;
