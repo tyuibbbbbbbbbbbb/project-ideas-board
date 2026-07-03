@@ -7,6 +7,11 @@ service cloud.firestore {
       allow read: if true;
       allow create, update: if request.auth != null && request.auth.uid == userId;
       allow delete: if false;
+
+      // רעיונות שמורים - פרטיים, רק הבעלים יכול לקרוא/לכתוב
+      match /saved/{ideaId} {
+        allow read, write: if request.auth != null && request.auth.uid == userId;
+      }
     }
 
     // רעיונות - כולם יכולים לקרוא, רק מחוברים יכולים ליצור/לעדכן

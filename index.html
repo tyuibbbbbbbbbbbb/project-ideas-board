@@ -36,6 +36,8 @@
     <button class="filter-btn active" data-filter="all">הכל</button>
     <button class="filter-btn" data-filter="open">פתוחים לאימוץ</button>
     <button class="filter-btn" data-filter="taken">נלקחו</button>
+    <button class="filter-btn" data-filter="done">בוצע</button>
+    <button class="filter-btn" data-filter="saved">השמורים שלי</button>
   </section>
 
   <section id="ideasGrid" class="ideas-grid">
@@ -78,6 +80,10 @@
       <input type="password" id="authPassword" required minlength="6" placeholder="לפחות 6 תווים" />
       <button type="submit" id="authSubmitBtn" class="btn btn-gold full">התחבר</button>
       <p id="authError" class="error-text hidden"></p>
+      <p class="auth-switch">
+        <span id="authSwitchText">אין לך חשבון?</span>
+        <a href="#" id="authSwitchLink">הרשם עכשיו</a>
+      </p>
     </form>
   </div>
 </div>

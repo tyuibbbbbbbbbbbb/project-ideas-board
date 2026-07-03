@@ -11,6 +11,7 @@ import {
   doc,
   setDoc,
   getDoc,
+  deleteDoc,
   updateDoc,
   onSnapshot,
   arrayUnion,
@@ -24,6 +25,8 @@ let currentUser = null;   // firebase auth user
 let currentProfile = null; // { fullName, username }
 let allIdeas = [];
 let activeFilter = "all";
+let savedIds = new Set();
+let unsubSaved = null;
 
 // ---------- DOM ----------
 const $ = (id) => document.getElementById(id);
@@ -43,6 +46,9 @@ const authSubmitBtn = $("authSubmitBtn");
 const authError = $("authError");
 let authMode = "login";
 
+const authSwitchText = $("authSwitchText");
+const authSwitchLink = $("authSwitchLink");
+
 const ideaModal = $("ideaModal");
 const ideaForm = $("ideaForm");
 
@@ -61,22 +67,38 @@ document.querySelectorAll("[data-close]").forEach((btn) => {
 });
 
 // ---------- Auth ----------
-loginBtn.addEventListener("click", () => {
-  authMode = "login";
-  authModalTitle.textContent = "התחברות";
-  authSubmitBtn.textContent = "התחבר";
-  registerFields.classList.add("hidden");
+function setAuthMode(mode) {
+  authMode = mode;
+  authForm.reset();
   authError.classList.add("hidden");
+  if (mode === "register") {
+    authModalTitle.textContent = "הרשמה";
+    authSubmitBtn.textContent = "הרשם";
+    registerFields.classList.remove("hidden");
+    authSwitchText.textContent = "יש לך כבר חשבון?";
+    authSwitchLink.textContent = "התחבר עכשיו";
+  } else {
+    authModalTitle.textContent = "התחברות";
+    authSubmitBtn.textContent = "התחבר";
+    registerFields.classList.add("hidden");
+    authSwitchText.textContent = "אין לך חשבון?";
+    authSwitchLink.textContent = "הרשם עכשיו";
+  }
+}
+
+loginBtn.addEventListener("click", () => {
+  setAuthMode("login");
   openModal(authModal);
 });
 
 registerBtn.addEventListener("click", () => {
-  authMode = "register";
-  authModalTitle.textContent = "הרשמה";
-  authSubmitBtn.textContent = "הרשם";
-  registerFields.classList.remove("hidden");
-  authError.classList.add("hidden");
+  setAuthMode("register");
   openModal(authModal);
+});
+
+authSwitchLink.addEventListener("click", (e) => {
+  e.preventDefault();
+  setAuthMode(authMode === "login" ? "register" : "login");
 });
 
 logoutBtn.addEventListener("click", () => signOut(auth));
@@ -123,6 +145,10 @@ function translateError(err) {
 
 onAuthStateChanged(auth, async (user) => {
   currentUser = user;
+
+  if (unsubSaved) { unsubSaved(); unsubSaved = null; }
+  savedIds = new Set();
+
   if (user) {
     const snap = await getDoc(doc(db, "users", user.uid));
     currentProfile = snap.exists() ? snap.data() : { fullName: user.email, username: "" };
@@ -130,6 +156,11 @@ onAuthStateChanged(auth, async (user) => {
     registerBtn.classList.add("hidden");
     userBox.classList.remove("hidden");
     userName.textContent = `שלום, ${currentProfile.fullName || currentProfile.username}`;
+
+    unsubSaved = onSnapshot(collection(db, "users", user.uid, "saved"), (snapshot) => {
+      savedIds = new Set(snapshot.docs.map((d) => d.id));
+      renderIdeas();
+    });
   } else {
     currentProfile = null;
     loginBtn.classList.remove("hidden");
@@ -206,10 +237,17 @@ function renderIdeas() {
     const st = statusOf(idea);
     if (activeFilter === "open") return st === "open";
     if (activeFilter === "taken") return st === "taken";
+    if (activeFilter === "done") return st === "done";
+    if (activeFilter === "saved") return savedIds.has(idea.id);
     return true;
   });
 
   list.sort((a, b) => scoreOf(b) - scoreOf(a));
+
+  if (activeFilter === "saved" && !currentUser) {
+    ideasGrid.innerHTML = `<div class="loading">התחבר כדי לראות את הרעיונות השמורים שלך.</div>`;
+    return;
+  }
 
   if (list.length === 0) {
     ideasGrid.innerHTML = `<div class="loading">אין רעיונות להצגה כרגע. תהיה הראשון לפרסם!</div>`;
@@ -223,13 +261,17 @@ function renderIdeas() {
 function buildCard(idea) {
   const st = statusOf(idea);
   const card = document.createElement("div");
-  card.className = "idea-card" + (st === "taken" ? " taken" : "");
+  card.className = "idea-card" + (st === "taken" ? " taken" : "") + (st === "done" ? " done" : "");
 
   const myUpvoted = currentUser && idea.upvotes?.includes(currentUser.uid);
   const myDownvoted = currentUser && idea.downvotes?.includes(currentUser.uid);
+  const isSaved = savedIds.has(idea.id);
 
   card.innerHTML = `
-    <span class="idea-tag">${escapeHtml(idea.tag || "כללי")}</span>
+    <div class="card-top-row">
+      <span class="idea-tag">${escapeHtml(idea.tag || "כללי")}</span>
+      <button class="save-btn ${isSaved ? "active" : ""}" title="שמור לעצמי">${isSaved ? "&#9733;" : "&#9734;"}</button>
+    </div>
     <h3 class="idea-title">${escapeHtml(idea.title)}</h3>
     <p class="idea-desc">${escapeHtml(idea.desc)}</p>
     <div class="idea-meta">
@@ -245,8 +287,11 @@ function buildCard(idea) {
   card.querySelector(".idea-title").addEventListener("click", () => showDetail(idea));
   card.querySelector(".vote-btn.up").addEventListener("click", () => vote(idea, "up"));
   card.querySelector(".vote-btn.down").addEventListener("click", () => vote(idea, "down"));
+  card.querySelector(".save-btn").addEventListener("click", () => toggleSave(idea.id));
   const claimBtn = card.querySelector(".claim-btn");
   if (claimBtn) claimBtn.addEventListener("click", () => claimIdea(idea));
+  const finishBtn = card.querySelector(".finish-btn");
+  if (finishBtn) finishBtn.addEventListener("click", () => finishIdea(idea));
 
   return card;
 }
@@ -255,10 +300,26 @@ function badgeOrClaimHtml(idea, st) {
   if (st === "review") {
     return `<span class="review-badge">בבדיקה &#9888;</span>`;
   }
+  if (st === "done") {
+    return `<span class="done-badge">בוצע &#9989; (ע"י ${escapeHtml(idea.takenByName || "מפתח")})</span>`;
+  }
   if (st === "taken") {
+    if (currentUser && currentUser.uid === idea.takenByUid) {
+      return `<button class="finish-btn">ביצעתי את הפרויקט &#9989;</button>`;
+    }
     return `<span class="taken-badge">נלקח ע"י ${escapeHtml(idea.takenByName || "מפתח")}</span>`;
   }
   return `<button class="claim-btn">יאללה עלי! &#128640;</button>`;
+}
+
+async function toggleSave(ideaId) {
+  if (!currentUser) { openModal(authModal); return; }
+  const ref = doc(db, "users", currentUser.uid, "saved", ideaId);
+  if (savedIds.has(ideaId)) {
+    await deleteDoc(ref);
+  } else {
+    await setDoc(ref, { savedAt: serverTimestamp() });
+  }
 }
 
 async function vote(idea, direction) {
@@ -293,6 +354,12 @@ async function claimIdea(idea) {
   });
 }
 
+async function finishIdea(idea) {
+  if (!currentUser || currentUser.uid !== idea.takenByUid) return;
+  const ref = doc(db, "ideas", idea.id);
+  await updateDoc(ref, { status: "done" });
+}
+
 function showDetail(idea) {
   const st = statusOf(idea);
   detailContent.innerHTML = `
@@ -307,6 +374,8 @@ function showDetail(idea) {
   `;
   const claimBtn = detailContent.querySelector(".claim-btn");
   if (claimBtn) claimBtn.addEventListener("click", () => { claimIdea(idea); closeModal(detailModal); });
+  const finishBtn = detailContent.querySelector(".finish-btn");
+  if (finishBtn) finishBtn.addEventListener("click", () => { finishIdea(idea); closeModal(detailModal); });
   openModal(detailModal);
 }
 
