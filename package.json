@@ -1,0 +1,10 @@
+{
+  "name": "projects-ideas-site",
+  "version": "1.0.0",
+  "description": "לוח רעיונות לפרויקטים - כל אחד יכול להעלות רעיון וכל אחד יכול לאמץ אותו",
+  "private": true,
+  "scripts": {
+    "dev": "npx http-server . -p 5500 -c-1",
+    "deploy": "npx firebase-tools deploy"
+  }
+}
