@@ -7,12 +7,12 @@ import { getAuth } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-aut
 import { getFirestore } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
 
 const firebaseConfig = {
-  apiKey: "YOUR_API_KEY",
-  authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
-  projectId: "YOUR_PROJECT_ID",
-  storageBucket: "YOUR_PROJECT_ID.appspot.com",
-  messagingSenderId: "YOUR_SENDER_ID",
-  appId: "YOUR_APP_ID"
+  apiKey: "AIzaSyDs-EhWYlreyW_H-gui180KEdlhFHqm6H8",
+  authDomain: "prujact.firebaseapp.com",
+  projectId: "prujact",
+  storageBucket: "prujact.firebasestorage.app",
+  messagingSenderId: "564958849421",
+  appId: "1:564958849421:web:3773e177b71186444bf5c4"
 };
 
 export const app = initializeApp(firebaseConfig);
