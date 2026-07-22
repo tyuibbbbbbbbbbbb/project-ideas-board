@@ -1,4 +1,4 @@
-import { auth, db } from "./firebase-config.js?v=2";
+import { auth, db } from "./firebase-config.js?v=3";
 import {
   signInAnonymously,
   onAuthStateChanged
@@ -25,6 +25,7 @@ let displayName = localStorage.getItem(NAME_KEY) || null;
 let allIdeas = [];
 let savedIds = new Set(JSON.parse(localStorage.getItem(SAVED_KEY) || "[]"));
 let activeFilter = "all";
+let activeTag = null;
 let pendingAction = null;
 
 // ---------- DOM ----------
@@ -129,7 +130,7 @@ ideaForm.addEventListener("submit", async (e) => {
       authorUid: uid,
       authorName: displayName,
       createdAt: serverTimestamp(),
-      upvotes: [], downvotes: [],
+      upvotes: [], nice: [], downvotes: [],
       status: "open",
       takenByUid: null, takenByName: null
     });
@@ -152,12 +153,39 @@ document.querySelectorAll(".filter-btn").forEach((btn) => {
 
 // ---------- Rendering ----------
 function scoreOf(idea) {
-  return (idea.upvotes?.length || 0) - (idea.downvotes?.length || 0);
+  return (idea.upvotes?.length || 0) + (idea.nice?.length || 0) - (idea.downvotes?.length || 0);
 }
 
 function statusOf(idea) {
   if ((idea.downvotes?.length || 0) > DOWNVOTE_REVIEW_THRESHOLD) return "review";
   return idea.status || "open";
+}
+
+function setTagFilter(tag) {
+  activeTag = activeTag === tag ? null : tag;
+  renderIdeas();
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+function renderTags() {
+  const tagsBar = $("tagsBar");
+  if (!tagsBar) return;
+  const tags = [...new Set(allIdeas.map((i) => i.tag || "כללי").filter(Boolean))].sort();
+  const activeClass = (t) => activeTag === t ? "active" : "";
+  const clearBtn = activeTag
+    ? `<button class="tag-filter" data-tag="">הצג הכל (${activeTag === "כללי" ? "כללי" : activeTag}) ✕</button>`
+    : "";
+  const allBtn = `<button class="tag-filter ${activeClass(null)}" data-tag="">הכל</button>`;
+  tagsBar.innerHTML = clearBtn + allBtn + tags.map((t) =>
+    `<button class="tag-filter ${activeClass(t)}" data-tag="${escapeHtml(t)}">${escapeHtml(t)}</button>`
+  ).join("");
+
+  tagsBar.querySelectorAll(".tag-filter").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const tag = btn.dataset.tag;
+      setTagFilter(tag || null);
+    });
+  });
 }
 
 function renderIdeas() {
@@ -171,16 +199,21 @@ function renderIdeas() {
     if (activeFilter === "saved") return savedIds.has(idea.id);
     return true;
   });
+  if (activeTag) {
+    list = list.filter((idea) => idea.tag === activeTag);
+  }
 
   list.sort((a, b) => scoreOf(b) - scoreOf(a));
 
   if (list.length === 0) {
-    ideasGrid.innerHTML = `<div class="loading">אין רעיונות להצגה כרגע. תהיה הראשון לפרסם!</div>`;
+    const tagMsg = activeTag ? ` לתגית "${escapeHtml(activeTag)}"` : "";
+    ideasGrid.innerHTML = `<div class="loading">אין רעיונות להצגה כרגע${tagMsg}.</div>`;
     return;
   }
 
   ideasGrid.innerHTML = "";
   list.forEach((idea) => ideasGrid.appendChild(buildCard(idea)));
+  renderTags();
 }
 
 function buildCard(idea) {
@@ -189,21 +222,23 @@ function buildCard(idea) {
   card.className = "idea-card" + (st === "taken" ? " taken" : "") + (st === "done" ? " done" : "");
 
   const myUpvoted = uid && idea.upvotes?.includes(uid);
+  const myNice = uid && idea.nice?.includes(uid);
   const myDownvoted = uid && idea.downvotes?.includes(uid);
   const isSaved = savedIds.has(idea.id);
 
   card.innerHTML = `
     <div class="card-top-row">
-      <span class="idea-tag">${escapeHtml(idea.tag || "כללי")}</span>
-      <button class="save-btn ${isSaved ? "active" : ""}" title="שמור לעצמי">${isSaved ? "&#9733;" : "&#9734;"}</button>
+      <button class="idea-tag" title="הצג רעיונות בתגית הזו">${escapeHtml(idea.tag || "כללי")}</button>
+      <button class="save-btn ${isSaved ? "active" : ""}" title="שמור לעצמי">${isSaved ? "⭐" : "☆"}</button>
     </div>
     <h3 class="idea-title">${escapeHtml(idea.title)}</h3>
     <p class="idea-desc">${escapeHtml(idea.desc)}</p>
     <div class="idea-meta">
       <div class="vote-controls">
-        <button class="vote-btn up ${myUpvoted ? "active" : ""}" title="לייק">&#9650;</button>
+        <button class="vote-btn up ${myUpvoted ? "active" : ""}" title="שמושי מאוד" aria-label="שמושי מאוד">👍</button>
+        <button class="vote-btn nice ${myNice ? "active" : ""}" title="נחמד" aria-label="נחמד">🙂</button>
         <span class="vote-score">${scoreOf(idea)}</span>
-        <button class="vote-btn down ${myDownvoted ? "active" : ""}" title="דיסלייק">&#9660;</button>
+        <button class="vote-btn down ${myDownvoted ? "active" : ""}" title="ללא תועלת" aria-label="ללא תועלת">👎</button>
       </div>
       ${badgeOrClaimHtml(idea, st)}
     </div>
@@ -211,8 +246,10 @@ function buildCard(idea) {
 
   card.querySelector(".idea-title").addEventListener("click", () => showDetail(idea));
   card.querySelector(".vote-btn.up").addEventListener("click", () => vote(idea, "up"));
+  card.querySelector(".vote-btn.nice").addEventListener("click", () => vote(idea, "nice"));
   card.querySelector(".vote-btn.down").addEventListener("click", () => vote(idea, "down"));
   card.querySelector(".save-btn").addEventListener("click", () => toggleSave(idea.id));
+  card.querySelector(".idea-tag").addEventListener("click", () => setTagFilter(idea.tag || "כללי"));
   const claimBtn = card.querySelector(".claim-btn");
   if (claimBtn) claimBtn.addEventListener("click", () => claimIdea(idea));
   const finishBtn = card.querySelector(".finish-btn");
@@ -223,34 +260,41 @@ function buildCard(idea) {
 
 function badgeOrClaimHtml(idea, st) {
   if (st === "review") {
-    return `<span class="review-badge">בבדיקה &#9888;</span>`;
+    return `<span class="review-badge">בבדיקה ⚠️</span>`;
   }
   if (st === "done") {
-    return `<span class="done-badge">בוצע &#9989; (ע"י ${escapeHtml(idea.takenByName || "מפתח")})</span>`;
+    return `<span class="done-badge">בוצע ✅ (ע"י ${escapeHtml(idea.takenByName || "מפתח")})</span>`;
   }
   if (st === "taken") {
     if (uid && uid === idea.takenByUid) {
-      return `<button class="finish-btn">ביצעתי את הפרויקט &#9989;</button>`;
+      return `<button class="finish-btn">ביצעתי את הפרויקט ✅</button>`;
     }
     return `<span class="taken-badge">נלקח ע"י ${escapeHtml(idea.takenByName || "מפתח")}</span>`;
   }
-  return `<button class="claim-btn">יאללה עלי! &#128640;</button>`;
+  return `<button class="claim-btn">יאללה עלי! 🚀</button>`;
 }
 
 // ---------- Actions ----------
-function vote(idea, direction) {
+function vote(idea, kind) {
   requireName(async () => {
     if (!uid) return;
     const ref = doc(db, "ideas", idea.id);
     const upvoted = idea.upvotes?.includes(uid);
+    const niceVoted = idea.nice?.includes(uid);
     const downvoted = idea.downvotes?.includes(uid);
     const updates = {};
-    if (direction === "up") {
+    if (kind === "up") {
       updates.upvotes = upvoted ? arrayRemove(uid) : arrayUnion(uid);
+      if (niceVoted) updates.nice = arrayRemove(uid);
+      if (downvoted) updates.downvotes = arrayRemove(uid);
+    } else if (kind === "nice") {
+      updates.nice = niceVoted ? arrayRemove(uid) : arrayUnion(uid);
+      if (upvoted) updates.upvotes = arrayRemove(uid);
       if (downvoted) updates.downvotes = arrayRemove(uid);
     } else {
       updates.downvotes = downvoted ? arrayRemove(uid) : arrayUnion(uid);
       if (upvoted) updates.upvotes = arrayRemove(uid);
+      if (niceVoted) updates.nice = arrayRemove(uid);
     }
     try { await updateDoc(ref, updates); } catch (err) { alert(err.message); }
   });
@@ -259,7 +303,6 @@ function vote(idea, direction) {
 function claimIdea(idea) {
   requireName(async () => {
     if (!uid) return;
-    if (idea.authorUid === uid) { alert("אתה לא יכול לאמץ את הרעיון של עצמך :)"); return; }
     try {
       await updateDoc(doc(db, "ideas", idea.id), {
         status: "taken",
@@ -290,15 +333,16 @@ function toggleSave(ideaId) {
 function showDetail(idea) {
   const st = statusOf(idea);
   detailContent.innerHTML = `
-    <span class="idea-tag">${escapeHtml(idea.tag || "כללי")}</span>
+    <button class="idea-tag" title="הצג רעיונות בתגית הזו">${escapeHtml(idea.tag || "כללי")}</button>
     <h2>${escapeHtml(idea.title)}</h2>
     <div class="idea-author">פורסם ע"י ${escapeHtml(idea.authorName || "אנונימי")}</div>
     <p class="idea-desc">${escapeHtml(idea.desc)}</p>
     <div class="idea-meta">
-      <div class="vote-score">ניקוד: ${scoreOf(idea)} (${idea.upvotes?.length || 0} לייקים / ${idea.downvotes?.length || 0} דיסלייקים)</div>
+      <div class="vote-score">ניקוד: ${scoreOf(idea)} (${idea.upvotes?.length || 0} שמושי מאוד / ${idea.nice?.length || 0} נחמד / ${idea.downvotes?.length || 0} ללא תועלת)</div>
       ${badgeOrClaimHtml(idea, st)}
     </div>
   `;
+  detailContent.querySelector(".idea-tag").addEventListener("click", () => { setTagFilter(idea.tag || "כללי"); closeModal(detailModal); });
   const claimBtn = detailContent.querySelector(".claim-btn");
   if (claimBtn) claimBtn.addEventListener("click", () => { claimIdea(idea); closeModal(detailModal); });
   const finishBtn = detailContent.querySelector(".finish-btn");
