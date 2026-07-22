@@ -1,4 +1,4 @@
-import { auth, db } from "./firebase-config.js?v=3";
+import { auth, db } from "./firebase-config.js?v=4";
 import {
   signInAnonymously,
   onAuthStateChanged
